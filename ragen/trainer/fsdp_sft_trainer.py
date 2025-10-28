@@ -13,7 +13,6 @@
 # limitations under the License.
 """
 A lightweight one-file FSDP SFT Trainer
-TODO(zhangchi.usc1992)
 - Add calculation of mfu
 - Add validation
 """
@@ -46,7 +45,6 @@ from peft import LoraConfig, TaskType, get_peft_model
 
 from ragen.utils.dataset import SFTDataset
 from ragen.utils.fsdp_utils import get_fsdp_wrap_policy, init_fn, get_init_weight_context_manager
-
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv('VERL_SFT_LOGGING_LEVEL', 'WARN'))
@@ -419,16 +417,15 @@ class FSDPSFTTrainer(object):
             self.save_checkpoint(step=global_step)
 
 
-from ragen.trainer.fsdp_sft_trainer import FSDPSFTTrainer
 import hydra
-
 from torch.distributed.device_mesh import init_device_mesh
-
 from verl.utils.distributed import initialize_global_process_group
 
 
+# Hydra 配置管理框架的装饰器，用于自动加载和管理配置文件，支持命令行参数覆盖配置
 @hydra.main(config_path='config', config_name='sft_trainer', version_base=None)
 def main(config):
+    # 获取torchrun 分布式训练为每个进程分配的变量 RANK、LOCAL_RANK、WORLD_SIZE
     local_rank, rank, world_size = initialize_global_process_group()
 
     device_mesh = init_device_mesh(device_type='cuda', mesh_shape=(world_size,), mesh_dim_names=('dp',))
