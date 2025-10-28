@@ -60,8 +60,8 @@ main() {
 
     # Install package in editable mode
     print_step "setting up verl..."
-    git submodule init
-    git submodule update
+#    git submodule init
+#    git submodule update
     cd verl
     pip install -e . --no-dependencies # we put dependencies in RAGEN/requirements.txt
     cd ..
