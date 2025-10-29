@@ -35,7 +35,17 @@ torchrun --standalone --nnodes=1 --nproc_per_node=$nproc_per_node \
     model.enable_gradient_checkpointing=True \
     2>&1 | tee  $save_path/train.log
 
+# Find the latest checkpoint directory
+latest_checkpoint=$(ls -dt $save_path/global_step_* 2>/dev/null | head -n 1)
+
+if [ -z "$latest_checkpoint" ]; then
+    echo "Error: No checkpoint found in $save_path"
+    exit 1
+fi
+
+echo "Using checkpoint: $latest_checkpoint"
+
 python sft/utils/merge_lora.py \
     --base_model_name Qwen/Qwen2.5-7B-Instruct \
-    --lora_model_path $save_path \
+    --lora_model_path $latest_checkpoint \
     --output_path DoctorLLM-7B-SFT-1000-thinking

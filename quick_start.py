@@ -7,6 +7,13 @@ DoctorAgent-RL 快速入门脚本
 import pandas as pd
 import json
 from pathlib import Path
+import os
+
+# STORAGE_OPTIONS = {
+#     'key': os.environ['ALI_KEY'],
+#     'secret': os.environ['ALI_SECRET'],
+#     'endpoint': 'oss-cn-hangzhou.aliyuncs.com'
+# }
 
 def print_header(title):
     """打印格式化的标题"""
@@ -14,11 +21,14 @@ def print_header(title):
     print(f"  {title}")
     print("=" * 70)
 
+
 def explore_rl_data():
     """探索RL训练数据"""
     print_header("1. RL训练数据探索 (MTMedDialog_RL.parquet)")
 
-    rl_df = pd.read_parquet('data/MTMedDialog_RL.parquet')
+    # rl_df = pd.read_parquet('oss://buguk12/datasets/doctor_rl_data/MTMedDialog_RL.parquet',
+    #                         storage_options=STORAGE_OPTIONS)
+    rl_df = pd.read_parquet('/mnt/workspace/datasets/doctor_rl_data/MTMedDialog_RL.parquet')
 
     print(f"\n📊 数据集统计:")
     print(f"  总样本数: {len(rl_df):,}")
@@ -70,11 +80,12 @@ def explore_rl_data():
 
     return rl_df
 
+
 def explore_sft_data():
     """探索SFT训练数据"""
     print_header("2. SFT训练数据探索 (MTMedDialog_sft_train.parquet)")
 
-    sft_df = pd.read_parquet('data/MTMedDialog_sft_train.parquet')
+    sft_df = pd.read_parquet('/mnt/workspace/datasets/doctor_rl_data/MTMedDialog_sft_train.parquet')
 
     print(f"\n📊 数据集统计:")
     print(f"  总样本数: {len(sft_df):,}")
@@ -115,11 +126,12 @@ def explore_sft_data():
 
     return sft_df
 
+
 def explore_test_data():
     """探索测试数据"""
     print_header("3. 测试数据探索 (MTMedDialog_test.json)")
 
-    with open('data/MTMedDialog_test.json', 'r', encoding='utf-8') as f:
+    with open('/mnt/workspace/datasets/doctor_rl_data/MTMedDialog_test.json', 'r', encoding='utf-8') as f:
         test_data = json.load(f)
 
     print(f"\n📊 数据集统计:")
@@ -139,6 +151,7 @@ def explore_test_data():
             print(f"  {key}: {display_value}")
 
     return test_data
+
 
 def show_workflow():
     """展示训练工作流程"""
@@ -199,6 +212,7 @@ def show_workflow():
 
     print(workflow)
 
+
 def show_key_files():
     """展示关键文件说明"""
     print_header("5. 关键文件导航")
@@ -239,6 +253,7 @@ def show_key_files():
             exists = "✓" if Path(filepath).exists() else "✗"
             print(f"  {exists} {filepath}")
             print(f"     └─ {description}")
+
 
 def show_next_steps():
     """展示下一步行动建议"""
@@ -292,6 +307,7 @@ def show_next_steps():
 
     print(steps)
 
+
 def main():
     """主函数"""
     print("\n" + "🚀" * 35)
@@ -299,49 +315,50 @@ def main():
     print("  Multi-Agent RL for Medical Consultation")
     print("🚀" * 35)
 
-    # 检查数据文件是否存在
-    required_files = [
-        'data/MTMedDialog_RL.parquet',
-        'data/MTMedDialog_sft_train.parquet',
-        'data/MTMedDialog_test.json'
-    ]
+    # # 检查数据文件是否存在
+    # required_files = [
+    #     '/mnt/workspace/datasets/doctor_rl_data/MTMedDialog_RL.parquet',
+    #     '/mnt/workspace/datasets/doctor_rl_data/MTMedDialog_sft_train.parquet',
+    #     '/mnt/workspace/datasets/doctor_rl_data/MTMedDialog_test.json'
+    # ]
+    #
+    # missing_files = [f for f in required_files if not Path(f).exists()]
+    # if missing_files:
+    #     print(f"\n⚠️  警告: 以下数据文件不存在:")
+    #     for f in missing_files:
+    #         print(f"  - {f}")
+    #     print("\n请确保已下载数据集并放置在正确位置。")
+    #     return
+    #
+    # # 执行各个探索函数
+    # try:
+    #     explore_rl_data()
+    #     explore_sft_data()
+    #     explore_test_data()
+    #     show_workflow()
+    #     show_key_files()
+    #     show_next_steps()
+    #
+    #     print_header("完成!")
+    #     print("""
+    #     📖 更多详细信息请查看:
+    #       - LEARNING_GUIDE.md (完整学习路线)
+    #       - CLAUDE.md (项目技术文档)
+    #       - README.md (项目说明)
+    #
+    #     🎯 建议下一步:
+    #       1. 阅读 ragen/env/medical_consultation/env_patient_llm.py
+    #       2. 查看 scripts_exp/doctor-agent-rl-dynamic.sh 了解训练参数
+    #       3. 准备模型并开始小规模SFT实验
+    #
+    #     祝学习顺利! 🎓
+    #     """)
+    #
+    # except Exception as e:
+    #     print(f"\n❌ 错误: {e}")
+    #     import traceback
+    #     traceback.print_exc()
 
-    missing_files = [f for f in required_files if not Path(f).exists()]
-    if missing_files:
-        print(f"\n⚠️  警告: 以下数据文件不存在:")
-        for f in missing_files:
-            print(f"  - {f}")
-        print("\n请确保已下载数据集并放置在正确位置。")
-        return
-
-    # 执行各个探索函数
-    try:
-        explore_rl_data()
-        explore_sft_data()
-        explore_test_data()
-        show_workflow()
-        show_key_files()
-        show_next_steps()
-
-        print_header("完成!")
-        print("""
-        📖 更多详细信息请查看:
-          - LEARNING_GUIDE.md (完整学习路线)
-          - CLAUDE.md (项目技术文档)
-          - README.md (项目说明)
-
-        🎯 建议下一步:
-          1. 阅读 ragen/env/medical_consultation/env_patient_llm.py
-          2. 查看 scripts_exp/doctor-agent-rl-dynamic.sh 了解训练参数
-          3. 准备模型并开始小规模SFT实验
-
-        祝学习顺利! 🎓
-        """)
-
-    except Exception as e:
-        print(f"\n❌ 错误: {e}")
-        import traceback
-        traceback.print_exc()
 
 if __name__ == "__main__":
     main()
