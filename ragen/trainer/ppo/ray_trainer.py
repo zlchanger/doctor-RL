@@ -109,51 +109,105 @@ from verl.utils.torch_functional import masked_mean
 
 
 def compute_response_mask(data: DataProto):
+    """
+    计算响应部分的mask
+    从完整的attention_mask中提取出仅对应于模型生成响应（response）部分的mask
+    用于在后续计算中只关注响应token，忽略提示（prompt）部分
+    """
+    # 获取响应tensor，shape: (batch_size, response_length)
     responses = data.batch["responses"]
+    # 获取响应序列的长度（第二维度大小）
     response_length = responses.size(1)
+    # 获取完整的attention_mask，shape: (batch_size, prompt_length + response_length)
     attention_mask = data.batch["attention_mask"]
+    # 切片提取最后response_length个位置的mask，即只保留响应部分的mask
+    # 返回shape: (batch_size, response_length)
     return attention_mask[:, -response_length:]
 
 
 def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, kl_penalty="kl"):
+    """
+    应用KL散度惩罚到奖励中
+    主要功能：
+    1. 计算当前策略与参考策略之间的KL散度，防止策略更新过快偏离初始策略
+    2. 从原始token级别奖励中减去加权的KL散度，形成最终的token级别奖励
+    3. 使用自适应KL控制器动态调整KL惩罚系数beta
+    4. 返回更新后的数据和相关指标（KL散度值和系数）
+    """
+    # 获取响应tensor和相关尺寸信息
     responses = data.batch["responses"]
-    response_length = responses.size(1)
+    response_length = responses.size(1)  # 响应序列长度
+    # 获取环境/奖励模型计算的原始token级别分数
     token_level_scores = data.batch["token_level_scores"]
+    # 获取批次大小（用于更新KL控制器）
     batch_size = data.batch.batch_size[0]
+
+    # 如果response_mask未提前计算，则现在计算
     if "response_mask" not in data.batch:
         data.batch["response_mask"] = compute_response_mask(data)
-
     response_mask = data.batch["response_mask"]
 
-    # compute kl between ref_policy and current policy
-    # When apply_kl_penalty, algorithm.use_kl_in_reward=True, so the reference model has been enabled.
+    # 计算参考策略和当前策略之间的KL散度
+    # 用于衡量策略更新的幅度，防止策略突变
+    # old_log_probs: 当前策略在rollout时的log概率
+    # ref_log_prob: 参考策略（固定）的log概率
     kld = core_algos.kl_penalty(
         data.batch["old_log_probs"], data.batch["ref_log_prob"], kl_penalty=kl_penalty
-    )  # (batch_size, response_length)
+    )  # shape: (batch_size, response_length)
+
+    # 将KL散度乘以response_mask，屏蔽掉padding部分的KL散度
     kld = kld * response_mask
+
+    # 获取当前的KL惩罚系数beta（自适应调整）
     beta = kl_ctrl.value
 
+    # 计算最终的token级别奖励：原始分数 - beta * KL散度
+    # 这样可以在优化奖励的同时，惩罚过大的策略偏移
     token_level_rewards = token_level_scores - beta * kld
 
-    current_kl = masked_mean(kld, mask=response_mask, axis=-1)  # average over sequence
-    current_kl = torch.mean(current_kl, dim=0).item()
+    # 计算当前批次的平均KL散度（用于监控和自适应调整）
+    current_kl = masked_mean(kld, mask=response_mask, axis=-1)  # 先在序列维度求平均
+    current_kl = torch.mean(current_kl, dim=0).item()  # 再在批次维度求平均，得到标量
 
-    # according to https://github.com/huggingface/trl/blob/951ca1841f29114b969b57b26c7d3e80a39f75a0/trl/trainer/ppo_trainer.py#L837
+    # 根据当前KL散度更新KL控制器
+    # KL控制器会自适应地调整beta值，使得KL散度保持在目标范围内
     kl_ctrl.update(current_kl=current_kl, n_steps=batch_size)
+
+    # 将计算好的token级别奖励存回data中
     data.batch["token_level_rewards"] = token_level_rewards
 
+    # 记录指标：当前KL散度值和惩罚系数
     metrics = {"actor/reward_kl_penalty": current_kl, "actor/reward_kl_penalty_coeff": beta}
 
     return data, metrics
 
 
 def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1):
-    # Back-compatible with trainers that do not compute response mask in fit
+    """
+    计算优势函数（Advantage）和回报（Return）
+    主要功能：
+    1. 根据指定的优势估计器算法（adv_estimator）计算优势值
+    2. 支持多种算法：GAE（广义优势估计）、GRPO（分组相对策略优化）、REINFORCE++、REMAX、RLOO等
+    3. 优势值用于指导策略梯度更新，衡量某个动作相比平均水平的好坏程度
+    4. 返回值用于计算策略损失
+
+    参数：
+    - gamma: 折扣因子，用于计算未来奖励的现值
+    - lam: GAE中的lambda参数，用于平衡偏差和方差
+    """
+    # 向后兼容：如果response_mask未提前计算，则现在计算
     if "response_mask" not in data.batch:
         data.batch["response_mask"] = compute_response_mask(data)
-    # prepare response group
+
+    # 根据不同的优势估计器类型，调用相应的计算函数
     # TODO: add other ways to estimate advantages
+
+    # ===== GAE（Generalized Advantage Estimation）广义优势估计 =====
+    # 基于时序差分（TD）的方法，需要critic提供value函数
+    # 优点：平衡偏差和方差，训练更稳定
     if adv_estimator == AdvantageEstimator.GAE:
+        # 使用GAE算法计算优势和回报
+        # 需要输入：token级别奖励、value函数预测值、响应mask、折扣因子gamma、lambda参数
         advantages, returns = core_algos.compute_gae_advantage_return(
             token_level_rewards=data.batch["token_level_rewards"],
             values=data.batch["values"],
@@ -163,7 +217,12 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         )
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
+
+    # ===== GRPO（Group Relative Policy Optimization）分组相对策略优化 =====
+    # 基于outcome的方法，不需要critic
+    # 在同一个prompt的多个响应中进行相对比较，计算优势
     elif adv_estimator == AdvantageEstimator.GRPO:
+        # index参数（uid）用于标识哪些样本属于同一个prompt组
         advantages, returns = core_algos.compute_grpo_outcome_advantage(
             token_level_rewards=data.batch["token_level_rewards"],
             response_mask=data.batch["response_mask"],
@@ -171,6 +230,9 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         )
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
+
+    # ===== REINFORCE++ with Baseline =====
+    # REINFORCE算法的改进版本，使用baseline减少方差
     elif adv_estimator == AdvantageEstimator.REINFORCE_PLUS_PLUS_BASELINE:
         advantages, returns = core_algos.compute_reinforce_plus_plus_baseline_outcome_advantage(
             token_level_rewards=data.batch["token_level_rewards"],
@@ -179,6 +241,9 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         )
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
+
+    # ===== REINFORCE++ =====
+    # REINFORCE算法的增强版本
     elif adv_estimator == AdvantageEstimator.REINFORCE_PLUS_PLUS:
         advantages, returns = core_algos.compute_reinforce_plus_plus_outcome_advantage(
             token_level_rewards=data.batch["token_level_rewards"],
@@ -187,16 +252,23 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         )
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
+
+    # ===== REMAX（Reward Maximization）奖励最大化 =====
+    # 使用reward baseline进行归一化
     elif adv_estimator == AdvantageEstimator.REMAX:
+        # reward_baselines: 预先计算的奖励基线，用于归一化
         advantages, returns = core_algos.compute_remax_outcome_advantage(
             token_level_rewards=data.batch["token_level_rewards"],
             reward_baselines=data.batch["reward_baselines"],
             response_mask=data.batch["response_mask"],
         )
-
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
+
+    # ===== RLOO（Reinforcement Learning with Leave-One-Out）留一法强化学习 =====
+    # 使用leave-one-out方法计算baseline，减少方差
     elif adv_estimator == AdvantageEstimator.RLOO:
+        # 对每个样本，使用同组其他样本的平均奖励作为baseline
         advantages, returns = core_algos.compute_rloo_outcome_advantage(
             token_level_rewards=data.batch["token_level_rewards"],
             response_mask=data.batch["response_mask"],
@@ -204,8 +276,12 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         )
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
+
     else:
-        raise NotImplementedError
+        # 不支持的优势估计器类型
+        raise NotImplementedError(f"Advantage estimator {adv_estimator} is not implemented")
+
+    # 返回包含advantages和returns的data对象
     return data
 
 
@@ -1231,6 +1307,10 @@ class RayPPOTrainer(object):
                 # 步骤4.4：提取生成所需的批次数据
                 # ------------------------------------------------------------
                 # 从batch中弹出生成所需的键（input_ids, attention_mask, position_ids）
+                # input_ids, attention_mask, position_ids LLM 推理的标准输入格式
+                # input_ids：token ID 序列 → 模型输入
+                # attention_mask：标记哪些位置是真实token，哪些是padding → 防止模型关注填充部分
+                # position_ids：每个token的位置索引 → 用于位置编码
                 # 这些数据将用于LLM生成响应
                 gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
 
