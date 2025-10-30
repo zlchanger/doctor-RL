@@ -64,6 +64,7 @@ class Role(Enum):
     ActorRolloutRef = 6
     EnvLLM = 7
 
+
 class AdvantageEstimator(str, Enum):
     """
     Using an enumeration class to avoid spelling errors in adv_estimator
@@ -75,6 +76,7 @@ class AdvantageEstimator(str, Enum):
     REINFORCE_PLUS_PLUS_BASELINE = "reinforce_plus_plus_baseline"
     REMAX = "remax"
     RLOO = "rloo"
+
 
 @dataclass
 class ResourcePoolManager:
@@ -105,11 +107,13 @@ class ResourcePoolManager:
 import torch
 from verl.utils.torch_functional import masked_mean
 
+
 def compute_response_mask(data: DataProto):
     responses = data.batch["responses"]
     response_length = responses.size(1)
     attention_mask = data.batch["attention_mask"]
     return attention_mask[:, -response_length:]
+
 
 def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, kl_penalty="kl"):
     responses = data.batch["responses"]
@@ -141,6 +145,7 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, 
     metrics = {"actor/reward_kl_penalty": current_kl, "actor/reward_kl_penalty_coeff": beta}
 
     return data, metrics
+
 
 def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1):
     # Back-compatible with trainers that do not compute response mask in fit
@@ -209,6 +214,7 @@ def reduce_metrics(metrics: dict):
         metrics[key] = np.mean(val)
     return metrics
 
+
 def normalize_reward(reward, uid, reward_norm_type):
     id2score = defaultdict(list)
     id2mean = {}
@@ -224,9 +230,10 @@ def normalize_reward(reward, uid, reward_norm_type):
             id2std[u] = torch.std(torch.tensor([id2score[u]], dtype=torch.float32))
         else:
             raise ValueError(f"no score in prompt index: {u}")
-    normalized_reward = [(r - id2mean[u]) / (id2std[u] + 1e-6) for r, u in zip(reward, uid)] # NOTE: +1e-6, maybe +1!
+    normalized_reward = [(r - id2mean[u]) / (id2std[u] + 1e-6) for r, u in zip(reward, uid)]  # NOTE: +1e-6, maybe +1!
     # transform to the same dtype as reward
     return np.array(normalized_reward, dtype=reward.dtype)
+
 
 def _compute_response_info(batch):
     response_length = batch.batch['responses'].shape[-1]
@@ -305,13 +312,13 @@ def compute_data_metrics(batch, use_critic=True):
         'critic/returns/min':
             torch.min(valid_returns).detach().item(),
         **({
-            # values
-            'critic/values/mean': torch.mean(valid_values).detach().item(),
-            'critic/values/max': torch.max(valid_values).detach().item(),
-            'critic/values/min': torch.min(valid_values).detach().item(),
-            # vf explained var
-            'critic/vf_explained_var': (1.0 - return_diff_var / (return_var + 1e-5)).detach().item(),
-        } if use_critic else {}),
+               # values
+               'critic/values/mean': torch.mean(valid_values).detach().item(),
+               'critic/values/max': torch.max(valid_values).detach().item(),
+               'critic/values/min': torch.min(valid_values).detach().item(),
+               # vf explained var
+               'critic/vf_explained_var': (1.0 - return_diff_var / (return_var + 1e-5)).detach().item(),
+           } if use_critic else {}),
 
         # response length
         'response_length/mean':
@@ -331,7 +338,7 @@ def compute_data_metrics(batch, use_critic=True):
             torch.min(prompt_length).detach().item(),
         'prompt_length/clip_ratio':
             torch.mean(torch.eq(prompt_length, max_prompt_length).float()).detach().item(),
-            
+
         # metrics for actions
         'metric/total_env':
             int(np.array(batch.non_tensor_batch['total_env'], dtype=np.int16).sum()),
@@ -352,8 +359,10 @@ def compute_data_metrics(batch, use_critic=True):
     }
 
     if 'diagnosis_score' in batch.non_tensor_batch:
-        metrics['metric/diagnosis_score'] = float(np.array(batch.non_tensor_batch['diagnosis_score'], dtype=np.float32).mean())
-        metrics['metric/recommandation_score'] = float(np.array(batch.non_tensor_batch['recommandation_score'], dtype=np.float32).mean())
+        metrics['metric/diagnosis_score'] = float(
+            np.array(batch.non_tensor_batch['diagnosis_score'], dtype=np.float32).mean())
+        metrics['metric/recommandation_score'] = float(
+            np.array(batch.non_tensor_batch['recommandation_score'], dtype=np.float32).mean())
 
     # metric for two-armed bandit
     if batch.non_tensor_batch['data_source'][0] == 'two_armed_bandit':
@@ -383,7 +392,8 @@ def compute_timing_metrics(batch, timing_raw):
             f'timing_s/{name}': value for name, value in timing_raw.items()
         },
         **{
-            f'timing_per_token_ms/{name}': timing_raw[name] * 1000 / num_tokens_of_section[name] for name in set(num_tokens_of_section.keys(
+            f'timing_per_token_ms/{name}': timing_raw[name] * 1000 / num_tokens_of_section[name] for name in
+            set(num_tokens_of_section.keys(
             )) & set(timing_raw.keys())
         },
     }
@@ -398,7 +408,17 @@ def _timer(name: str, timing_raw: Dict[str, float]):
 
 class RayPPOTrainer(object):
     """
-    Note that this trainer runs on the driver process on a single CPU/GPU node.
+    基于Ray的分布式PPO训练器。
+
+    该训练器运行在驱动进程上（单个CPU/GPU节点），通过Ray管理分布式worker进行训练。
+    支持FSDP、Megatron等多种并行策略，适用于大规模语言模型的强化学习训练。
+
+    主要功能：
+    - 分布式训练编排（Actor、Critic、RefPolicy、RewardModel等角色）
+    - 支持多种优势估计算法（GAE、GRPO、RLOO等）
+    - 支持混合引擎（Actor + Rollout融合）
+    - 支持参考策略KL惩罚
+    - 支持checkpoint保存和恢复
     """
 
     # TODO: support each role have individual ray_worker_group_cls,
@@ -414,9 +434,25 @@ class RayPPOTrainer(object):
                  env=None,
                  val_env=None,
                  env_class=None):
+        """
+        初始化PPO训练器。
+
+        Args:
+            config: 训练配置对象（Hydra配置）
+            tokenizer: 分词器实例
+            role_worker_mapping: 角色到Worker类的映射字典
+            resource_pool_manager: 资源池管理器，负责分配GPU资源
+            ray_worker_group_cls: Ray worker group类，默认为RayWorkerGroup
+            reward_fn: 奖励函数，用于计算token级别的奖励
+            val_reward_fn: 验证时使用的奖励函数
+            env: 训练环境实例
+            val_env: 验证环境实例，默认与训练环境相同
+            env_class: 环境类，用于创建环境副本
+        """
 
         # assert torch.cuda.is_available(), 'cuda must be available on driver'
 
+        # 基本配置
         self.tokenizer = tokenizer
         self.config = config
         self.reward_fn = reward_fn
@@ -424,16 +460,19 @@ class RayPPOTrainer(object):
         self.env = env
         self.val_env = env if val_env is None else val_env
         self.env_class = env_class
-        
-        if val_env is not None:
-            print("[INFO] val env is different from train env, it means you are evaluating the model's generalization capabilities.")
 
+        if val_env is not None:
+            print(
+                "[INFO] val env is different from train env, it means you are evaluating the model's generalization capabilities.")
+
+        # 检查混合引擎配置
         self.hybrid_engine = config.actor_rollout_ref.hybrid_engine
         assert self.hybrid_engine, 'Currently, only support hybrid engine'
 
         if self.hybrid_engine:
             assert Role.ActorRollout in role_worker_mapping, f'{role_worker_mapping.keys()=}'
 
+        # Worker管理配置
         self.role_worker_mapping = role_worker_mapping
         self.resource_pool_manager = resource_pool_manager
         self.use_reference_policy = Role.RefPolicy in role_worker_mapping and not config.algorithm.no_ref_policy
@@ -441,13 +480,16 @@ class RayPPOTrainer(object):
         self.use_rm = Role.RewardModel in role_worker_mapping
         self.ray_worker_group_cls = ray_worker_group_cls
 
-        self.val_num = 0
+        self.val_num = 0  # 验证次数计数器
 
-        # define in-reward KL control
-        # kl loss control currently not suppoorted
+        # 定义奖励中的KL控制器
+        # 注意：KL损失控制当前不支持
         if config.algorithm.use_kl_in_reward:
             self.kl_ctrl_in_reward = core_algos.get_kl_controller(config.algorithm.kl_ctrl)
 
+        # 根据优势估计器类型决定是否使用critic
+        # GAE需要value function，因此需要critic
+        # GRPO/RLOO等outcome-based方法不需要critic
         if self.config.algorithm.adv_estimator == AdvantageEstimator.GAE:
             self.use_critic = True
         elif self.config.algorithm.adv_estimator in [
@@ -460,12 +502,24 @@ class RayPPOTrainer(object):
             self.use_critic = False
         else:
             raise NotImplementedError
-        
-        self._validate_config()
-        self._create_dataloader()
-        self._init_logger()
-    
+
+        # 初始化流程
+        self._validate_config()  # 验证配置参数的正确性
+        self._create_dataloader()  # 创建训练和验证数据加载器
+        self._init_logger()  # 初始化日志记录器
+
     def _validate_config(self):
+        """
+        验证训练配置的正确性。
+
+        检查各项配置参数是否合理，包括：
+        - 批次大小是否能被GPU数量整除
+        - micro_batch_size和micro_batch_size_per_gpu参数是否冲突
+        - 序列并行配置是否正确
+        - 验证配置是否合理
+
+        如果发现配置错误，会抛出AssertionError或ValueError。
+        """
         config = self.config
         # number of GPUs total
         n_gpus = config.trainer.n_gpus_per_node * config.trainer.nnodes
@@ -548,9 +602,9 @@ class RayPPOTrainer(object):
             sp_size = config.actor_rollout_ref.actor.get("ulysses_sequence_parallel_size", 1)
             if config.actor_rollout_ref.actor.ppo_micro_batch_size is not None:
                 assert (
-                    config.actor_rollout_ref.actor.ppo_mini_batch_size
-                    % config.actor_rollout_ref.actor.ppo_micro_batch_size
-                    == 0
+                        config.actor_rollout_ref.actor.ppo_mini_batch_size
+                        % config.actor_rollout_ref.actor.ppo_micro_batch_size
+                        == 0
                 )
                 assert config.actor_rollout_ref.actor.ppo_micro_batch_size * sp_size >= n_gpus
 
@@ -573,8 +627,8 @@ class RayPPOTrainer(object):
 
         # Check if use_remove_padding is enabled when using sequence parallelism for fsdp
         if config.actor_rollout_ref.actor.strategy == "fsdp" and (
-            config.actor_rollout_ref.actor.get("ulysses_sequence_parallel_size", 1) > 1
-            or config.actor_rollout_ref.ref.get("ulysses_sequence_parallel_size", 1) > 1
+                config.actor_rollout_ref.actor.get("ulysses_sequence_parallel_size", 1) > 1
+                or config.actor_rollout_ref.ref.get("ulysses_sequence_parallel_size", 1) > 1
         ):
             assert config.actor_rollout_ref.model.use_remove_padding, (
                 "When using sequence parallelism for actor/ref policy, you must enable `use_remove_padding`."
@@ -602,16 +656,39 @@ class RayPPOTrainer(object):
         print("[validate_config] All configuration checks passed successfully!")
 
     def _init_logger(self):
+        """
+        初始化日志记录器。
+
+        创建Tracking实例用于记录训练指标到WandB、TensorBoard等后端。
+        所有训练过程中的指标（loss、reward、奖励等）都通过此logger记录。
+        """
         from verl.utils.tracking import Tracking
-        self.logger = Tracking(project_name=self.config.trainer.project_name,
-                          experiment_name=self.config.trainer.experiment_name,
-                          default_backend=self.config.trainer.logger,
-                          config=OmegaConf.to_container(self.config, resolve=True))
+        self.logger = Tracking(
+            project_name=self.config.trainer.project_name,  # 项目名称
+            experiment_name=self.config.trainer.experiment_name,  # 实验名称
+            default_backend=self.config.trainer.logger,  # 日志后端（wandb/tensorboard）
+            config=OmegaConf.to_container(self.config, resolve=True)  # 配置转为字典
+        )
 
     def _create_dataloader(self):
+        """
+        创建训练和验证数据加载器。
+
+        该方法负责：
+        1. 从parquet文件加载训练和验证数据集
+        2. 过滤掉超长的prompt（根据max_prompt_length）
+        3. 创建StatefulDataLoader以支持checkpoint恢复
+        4. 计算总训练步数并注入到优化器配置中
+
+        数据集使用RLHFDataset类加载，支持：
+        - 自动tokenization
+        - Prompt长度过滤
+        - 可选的数据采样
+        """
         from torch.utils.data import DataLoader
         # TODO: we have to make sure the batch size is divisible by the dp size
         from ragen.utils.dataset.rl_dataset import RLHFDataset, collate_fn
+        # 创建训练数据集
         self.train_dataset = RLHFDataset(parquet_files=self.config.data.train_files,
                                          tokenizer=self.tokenizer,
                                          prompt_key=self.config.data.prompt_key,
@@ -621,9 +698,11 @@ class RayPPOTrainer(object):
                                          truncation='error')
         if self.config.data.train_data_num is not None:
             if self.config.data.train_data_num > len(self.train_dataset.dataframe):
-                print(f"[WARNING] training dataset size is smaller than desired size. Using the dataset as the original size {len(self.train_dataset.dataframe)}")
+                print(
+                    f"[WARNING] training dataset size is smaller than desired size. Using the dataset as the original size {len(self.train_dataset.dataframe)}")
             else:
-                self.train_dataset.dataframe = self.train_dataset.dataframe.sample(self.config.data.train_data_num, random_state=42)
+                self.train_dataset.dataframe = self.train_dataset.dataframe.sample(self.config.data.train_data_num,
+                                                                                   random_state=42)
         print(f"filtered training dataset size: {len(self.train_dataset.dataframe)}")
 
         # use sampler for better ckpt resume
@@ -652,9 +731,11 @@ class RayPPOTrainer(object):
                                        truncation='error')
         if self.config.data.val_data_num is not None:
             if self.config.data.val_data_num > len(self.val_dataset.dataframe):
-                print(f"[WARNING] validation dataset size is smaller than desired size. Using the dataset as the original size {len(self.val_dataset.dataframe)}")
+                print(
+                    f"[WARNING] validation dataset size is smaller than desired size. Using the dataset as the original size {len(self.val_dataset.dataframe)}")
             else:
-                self.val_dataset.dataframe = self.val_dataset.dataframe.sample(self.config.data.val_data_num, random_state=42)
+                self.val_dataset.dataframe = self.val_dataset.dataframe.sample(self.config.data.val_data_num,
+                                                                               random_state=42)
         print(f"filtered validation dataset size: {len(self.val_dataset.dataframe)}")
 
         self.val_dataloader = StatefulDataLoader(
@@ -668,7 +749,7 @@ class RayPPOTrainer(object):
 
         print(f'Size of train dataloader: {len(self.train_dataloader)}')
         print(f'Size of val dataloader: {len(self.val_dataloader)}')
-        
+
         assert len(self.train_dataloader) >= 1
         assert len(self.val_dataloader) >= 1
 
@@ -687,7 +768,22 @@ class RayPPOTrainer(object):
             self.config.critic.optim.total_training_steps = total_training_steps
 
     def init_workers(self):
-        """Init resource pool and worker group"""
+        """
+        初始化Ray分布式workers。
+
+        该方法负责创建和初始化所有分布式训练所需的worker组：
+        1. 创建资源池（GPU资源分配）
+        2. 为每个角色创建对应的Worker类（Actor/Critic/RefPolicy/RewardModel/EnvLLM）
+        3. 使用Ray的worker group机制管理分布式进程
+        4. 初始化所有模型（加载权重到GPU显存）
+
+        Worker组包括：
+        - actor_rollout_wg: Actor和Rollout融合的worker（策略网络训练和推理）
+        - critic_wg: Critic网络worker（价值函数估计，仅GAE算法使用）
+        - ref_policy_wg: 参考策略worker（计算KL散度，可选）
+        - rm_wg: 奖励模型worker（基于模型的奖励打分，可选）
+        - env_llm_wg: 环境LLM worker（模拟环境响应，用于对话任务）
+        """
         self.resource_pool_manager.create_resource_pool()
 
         self.resource_pool_to_cls = {pool: {} for pool in self.resource_pool_manager.resource_pool_dict.values()}
@@ -726,9 +822,9 @@ class RayPPOTrainer(object):
         # create env_llm worker
         if self.config.env.use_env_llm:
             resource_pool = self.resource_pool_manager.get_resource_pool(Role.EnvLLM)
-            env_llm_cls = RayClassWithInitArgs(self.role_worker_mapping[Role.EnvLLM], 
-                                            config=self.config.env.env_llm,
-                                            role='env_llm')
+            env_llm_cls = RayClassWithInitArgs(self.role_worker_mapping[Role.EnvLLM],
+                                               config=self.config.env.env_llm,
+                                               role='env_llm')
             self.resource_pool_to_cls[resource_pool]['env_llm'] = env_llm_cls
 
         # initialize WorkerGroup
@@ -773,26 +869,49 @@ class RayPPOTrainer(object):
         self.actor_rollout_wg.init_model()
 
     def _save_checkpoint(self):
-        # path: given_path + `/global_step_{global_steps}` + `/actor`
+        """
+        保存训练checkpoint。
+
+        该方法负责保存完整的训练状态,包括:
+        1. Actor模型参数和优化器状态
+        2. Critic模型参数和优化器状态(如果使用GAE)
+        3. DataLoader状态(用于断点续训时精确恢复数据批次)
+        4. 最新checkpoint标记文件
+
+        Checkpoint路径结构:
+        - 本地路径: {default_local_dir}/global_step_{N}/actor/
+        - 远程路径: {default_hdfs_dir}/global_step_{N}/actor/ (可选)
+
+        支持自动清理旧checkpoint,保留最新的N个checkpoint(由max_*_ckpt_to_keep控制)。
+        """
+        # 步骤1: 构建checkpoint保存路径
+        # 路径格式: given_path + `/global_step_{global_steps}` + `/actor`
         local_global_step_folder = os.path.join(
             self.config.trainer.default_local_dir, f"global_step_{self.global_steps}"
         )
 
         print(f"local_global_step_folder: {local_global_step_folder}")
+        # Actor模型的本地保存路径
         actor_local_path = os.path.join(local_global_step_folder, "actor")
 
+        # 步骤2: 构建可选的远程路径(如HDFS)
+        # 如果配置了HDFS路径,则将checkpoint同步到远程存储
         actor_remote_path = (
             None
             if self.config.trainer.default_hdfs_dir is None
             else os.path.join(self.config.trainer.default_hdfs_dir, f"global_step_{self.global_steps}", "actor")
         )
 
+        # 步骤3: 配置checkpoint保留策略
+        # 旧版参数remove_previous_ckpt_in_save已废弃,建议使用max_*_ckpt_to_keep
         remove_previous_ckpt_in_save = self.config.trainer.get("remove_previous_ckpt_in_save", False)
         if remove_previous_ckpt_in_save:
             print(
                 "Warning: remove_previous_ckpt_in_save is deprecated,"
                 + " set max_actor_ckpt_to_keep=1 and max_critic_ckpt_to_keep=1 instead"
             )
+        # 确定Actor和Critic分别保留多少个checkpoint
+        # None表示保留所有checkpoint,1表示只保留最新的
         max_actor_ckpt_to_keep = (
             self.config.trainer.get("max_actor_ckpt_to_keep", None) if not remove_previous_ckpt_in_save else 1
         )
@@ -800,10 +919,13 @@ class RayPPOTrainer(object):
             self.config.trainer.get("max_critic_ckpt_to_keep", None) if not remove_previous_ckpt_in_save else 1
         )
 
+        # 步骤4: 保存Actor模型checkpoint
+        # 包括模型参数、优化器状态、学习率调度器状态等
         self.actor_rollout_wg.save_checkpoint(
             actor_local_path, actor_remote_path, self.global_steps, max_ckpt_to_keep=max_actor_ckpt_to_keep
         )
 
+        # 步骤5: 保存Critic模型checkpoint(如果使用GAE算法)
         if self.use_critic:
             critic_local_path = os.path.join(local_global_step_folder, "critic")
             critic_remote_path = (
@@ -815,12 +937,16 @@ class RayPPOTrainer(object):
                 critic_local_path, critic_remote_path, self.global_steps, max_ckpt_to_keep=max_critic_ckpt_to_keep
             )
 
-        # save dataloader
+        # 步骤6: 保存DataLoader状态
+        # 保存当前的数据迭代器状态,确保恢复训练时从正确的数据批次开始
+        # 这对于可重现性和断点续训非常重要
         dataloader_local_path = os.path.join(local_global_step_folder, "data.pt")
         dataloader_state_dict = self.train_dataloader.state_dict()
         torch.save(dataloader_state_dict, dataloader_local_path)
 
-        # latest checkpointed iteration tracker (for atomic usage)
+        # 步骤7: 更新最新checkpoint标记文件
+        # 用于自动恢复训练时快速定位最新的checkpoint
+        # 使用独立文件确保原子性操作,避免并发写入问题
         local_latest_checkpointed_iteration = os.path.join(
             self.config.trainer.default_local_dir, "latest_checkpointed_iteration.txt"
         )
@@ -828,165 +954,290 @@ class RayPPOTrainer(object):
             f.write(str(self.global_steps))
 
     def _load_checkpoint(self):
+        """
+        加载训练checkpoint恢复训练状态。
+
+        该方法负责从磁盘加载保存的模型参数和训练状态,实现断点续训。
+
+        支持三种恢复模式:
+        1. "disable": 禁用恢复,从头开始训练
+        2. "auto": 自动查找最新的checkpoint并恢复（如果没有则从头开始）
+        3. "resume_path": 从指定路径恢复
+
+        加载内容包括:
+        - Actor模型参数和优化器状态
+        - Critic模型参数和优化器状态(如果使用GAE)
+        - DataLoader状态(确保从正确的批次继续)
+        - 全局训练步数
+
+        Returns:
+            int: 恢复的global_steps数值，如果从头开始则返回0
+        """
+        # 步骤1: 检查是否禁用恢复
         if self.config.trainer.resume_mode == "disable":
             return 0
 
-        # load from hdfs
+        # 步骤2: 定位checkpoint文件夹
+        # 从HDFS加载（当前未实现）
         if self.config.trainer.default_hdfs_dir is not None:
             raise NotImplementedError("load from hdfs is not implemented yet")
         else:
+            # 从本地文件系统加载
             checkpoint_folder = self.config.trainer.default_local_dir  # TODO: check path
+            # 将相对路径转换为绝对路径
             if not os.path.isabs(checkpoint_folder):
                 working_dir = os.getcwd()
                 checkpoint_folder = os.path.join(working_dir, checkpoint_folder)
+            # 在checkpoint目录下查找最新的global_step文件夹
             global_step_folder = find_latest_ckpt_path(checkpoint_folder)  # None if no latest
 
-        # find global_step_folder
+        # 步骤3: 根据resume_mode确定要加载的checkpoint
         if self.config.trainer.resume_mode == "auto":
+            # 自动模式：如果找不到checkpoint，从头开始训练
             if global_step_folder is None:
                 print("Training from scratch")
                 return 0
         else:
             if self.config.trainer.resume_mode == "resume_path":
+                # 手动指定路径模式：从指定的checkpoint恢复
                 assert isinstance(self.config.trainer.resume_from_path, str), "resume ckpt must be str type"
                 assert "global_step_" in self.config.trainer.resume_from_path, (
                     "resume ckpt must specify the global_steps"
                 )
                 global_step_folder = self.config.trainer.resume_from_path
+                # 将相对路径转换为绝对路径
                 if not os.path.isabs(global_step_folder):
                     working_dir = os.getcwd()
                     global_step_folder = os.path.join(working_dir, global_step_folder)
         print(f"Load from checkpoint folder: {global_step_folder}")
-        # set global step
+
+        # 步骤4: 从checkpoint路径提取全局步数
+        # 路径格式：.../global_step_{N}/...
+        # 从路径中解析出N作为当前的global_steps
         self.global_steps = int(global_step_folder.split("global_step_")[-1])
 
         print(f"Setting global step to {self.global_steps}")
         print(f"Resuming from {global_step_folder}")
 
+        # 步骤5: 构建Actor和Critic的checkpoint路径
         actor_path = os.path.join(global_step_folder, "actor")
         critic_path = os.path.join(global_step_folder, "critic")
-        # load actor
+
+        # 步骤6: 加载Actor模型
+        # 包括模型参数、优化器状态、学习率调度器状态等
         self.actor_rollout_wg.load_checkpoint(
             actor_path, del_local_after_load=self.config.trainer.del_local_ckpt_after_load
         )
-        # load critic
+
+        # 步骤7: 加载Critic模型（如果使用GAE算法）
         if self.use_critic:
             self.critic_wg.load_checkpoint(
                 critic_path, del_local_after_load=self.config.trainer.del_local_ckpt_after_load
             )
 
-        # load dataloader,
+        # 步骤8: 加载DataLoader状态
+        # 这确保训练从正确的数据批次继续，避免数据重复或遗漏
         # TODO: from remote not implemented yet
         dataloader_local_path = os.path.join(global_step_folder, "data.pt")
         if os.path.exists(dataloader_local_path):
+            # 加载DataLoader的随机数生成器状态和采样器状态
             dataloader_state_dict = torch.load(dataloader_local_path, weights_only=False)
             self.train_dataloader.load_state_dict(dataloader_state_dict)
         else:
+            # 如果DataLoader状态文件不存在，发出警告
+            # 模型权重会加载，但数据迭代会从头开始
             print(f"Warning: No dataloader state found at {dataloader_local_path}, will start from scratch")
 
     def _balance_batch(self, batch: DataProto, metrics, logging_prefix='global_seqlen'):
-        """Reorder the data on single controller such that each dp rank gets similar total tokens"""
+        """
+        在单个控制器上重新排序数据,使每个数据并行（DP）rank获得相似数量的token。
+
+        批次平衡的目的:
+        1. 均衡分配token数量到各个GPU上,减少负载不均
+        2. 提高训练效率,避免某些GPU等待其他GPU完成计算
+        3. 在分布式训练中实现更好的资源利用
+
+        重要提示:
+        - 此方法会改变batch内数据的顺序
+        - 使用基于组的优势估计（如GRPO、RLOO）时需要谨慎
+        - 数据重排序后,相同prompt的样本可能被分散到不同GPU
+
+        Args:
+            batch: DataProto对象,包含待平衡的批次数据
+            metrics: 指标字典,用于记录平衡统计信息
+            logging_prefix: 日志前缀,用于区分不同的平衡操作
+        """
+        # 步骤1: 提取attention mask并计算每个序列的有效token数量
         attention_mask = batch.batch['attention_mask']
         batch_size = attention_mask.shape[0]
+        # global_seqlen_lst: 每个序列的有效token数量列表
+        # 通过sum attention_mask得到,pad token的mask为0不计入
         global_seqlen_lst = attention_mask.view(batch_size, -1).sum(-1).tolist()  # (train_batch_size,)
+
+        # 步骤2: 获取数据并行的world size（总GPU数量）
         world_size = self.actor_rollout_wg.world_size
+
+        # 步骤3: 计算平衡的分区策略
+        # 使用贪心算法将序列分配到K个分区,使每个分区的总token数尽可能接近
+        # equal_size=True: 确保每个分区的序列数量相等（某些序列可能被复制）
         global_partition_lst = get_seqlen_balanced_partitions(global_seqlen_lst,
                                                               k_partitions=world_size,
                                                               equal_size=True)
-        # reorder based on index. The data will be automatically equally partitioned by dispatch function
+
+        # 步骤4: 根据分区索引重新排序batch
+        # 将分区列表展平,得到新的排序索引
+        # 数据会被自动平均分配到各个GPU（通过dispatch函数）
         global_idx = torch.tensor([j for partition in global_partition_lst for j in partition])
         batch.reorder(global_idx)
+
+        # 步骤5: 计算并记录平衡统计信息
+        # 包括：各分区的token数量、不平衡比率、最大/最小分区大小等
         global_balance_stats = log_seqlen_unbalance(seqlen_list=global_seqlen_lst,
                                                     partitions=global_partition_lst,
-                                                    prefix=logging_prefix) 
+                                                    prefix=logging_prefix)
+        # 将平衡统计信息添加到metrics中
         metrics.update(global_balance_stats)
-    
+
     def fit(self):
         """
-        The training loop of PPO.
-        The driver process only need to call the compute functions of the worker group through RPC to construct the PPO dataflow.
-        The light-weight advantage computation is done on the driver process.
+        PPO训练主循环。
+
+        驱动进程通过RPC调用worker group的计算函数来构建PPO数据流。
+        轻量级的优势函数计算在驱动进程上完成。
+
+        训练流程：
+        1. 初始化和checkpoint加载
+        2. 训练前验证（可选）
+        3. 准备生成配置和环境
+        4. 主训练循环：
+           - 更新参考策略（按指定频率）
+           - LLM与环境交互生成轨迹
+           - 计算奖励和优势函数
+           - 更新critic网络（如果使用GAE）
+           - 更新actor策略网络
+           - 定期验证和保存checkpoint
+        5. 记录训练指标
         """
 
         logger = self.logger
         self.global_steps = 0
-        # load checkpoint before doing anything
+
+        # ============================================================
+        # 第一步：加载checkpoint（如果存在）
+        # ============================================================
         self._load_checkpoint()
 
-        # perform validation before training
-        # currently, we only support validation using the reward_function.
+        # ============================================================
+        # 第二步：训练前验证（可选）
+        # ============================================================
+        # 目前仅支持使用reward_function进行验证
         if self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True):
             val_metrics = self._validate()
             if self.config.trainer.get('val_only', False):
                 return
 
-        # add tqdm
+        # 添加进度条
         progress_bar = tqdm(total=self.total_training_steps, initial=self.global_steps, desc="Training Progress")
 
-        # we start from step 1
+        # 从步骤1开始
         self.global_steps += 1
 
-
-        # Agent config preparation
+        # ============================================================
+        # 第三步：准备生成配置和环境
+        # ============================================================
+        # Agent配置准备：设置LLM生成的各项参数
         gen_config = GenerationConfig(
-            max_turns=self.config.max_turns,
-            max_start_length=self.config.data.max_start_length,
-            max_prompt_length=self.config.data.max_prompt_length,
-            max_response_length=self.config.data.max_response_length,
-            max_obs_length=self.config.data.max_obs_length,
-            logging=self.config.logging,
-            num_gpus=self.config.trainer.n_gpus_per_node,
-            no_think_rl=self.config.algorithm.no_think_rl,
-            state_masking=self.config.actor_rollout_ref.actor.state_masking,
-            start_state_marker=self.config.algorithm.state_masking.start_state_marker,
-            end_state_marker=self.config.algorithm.state_masking.end_state_marker,
+            max_turns=self.config.max_turns,  # 最大对话轮数（动态设置）
+            max_start_length=self.config.data.max_start_length,  # 起始输入最大长度
+            max_prompt_length=self.config.data.max_prompt_length,  # 提示文本最大长度
+            max_response_length=self.config.data.max_response_length,  # 响应文本最大长度
+            max_obs_length=self.config.data.max_obs_length,  # 观察文本最大长度
+            logging=self.config.logging,  # 日志配置
+            num_gpus=self.config.trainer.n_gpus_per_node,  # 每个节点的GPU数量
+            no_think_rl=self.config.algorithm.no_think_rl,  # 是否禁用思考过程的RL
+            state_masking=self.config.actor_rollout_ref.actor.state_masking,  # 是否启用状态掩码
+            start_state_marker=self.config.algorithm.state_masking.start_state_marker,  # 状态开始标记
+            end_state_marker=self.config.algorithm.state_masking.end_state_marker,  # 状态结束标记
         )
 
+        # 创建LLM生成管理器：负责管理LLM与环境的多轮交互
         generation_manager = LLMGenerationManager(
-            tokenizer=self.tokenizer,
-            actor_rollout_wg=self.actor_rollout_wg,
-            env_class=self.env_class,
-            config=gen_config,
-            logger = logger,
+            tokenizer=self.tokenizer,  # 分词器
+            actor_rollout_wg=self.actor_rollout_wg,  # Actor-Rollout worker group
+            env_class=self.env_class,  # 环境类
+            config=gen_config,  # 生成配置
+            logger=logger,  # 日志记录器
         )
 
-        envs = [self.env.copy() for _ in range(self.config.data.train_batch_size * self.config.actor_rollout_ref.rollout.n_agent)] 
+        # 创建环境实例列表：每个prompt * n_agent都有一个独立的环境副本
+        # train_batch_size: 训练批次中的prompt数量
+        # n_agent: 每个prompt生成的agent响应数量（用于GRPO等算法）
+        envs = [self.env.copy() for _ in
+                range(self.config.data.train_batch_size * self.config.actor_rollout_ref.rollout.n_agent)]
 
-
-
-        # start training loop
+        # ============================================================
+        # 第四步：主训练循环
+        # ============================================================
+        # 外层循环：遍历所有训练轮次（epochs）
         for epoch in range(self.config.trainer.total_epochs):
+            # 内层循环：遍历当前epoch中的所有训练批次
             for batch_dict in self.train_dataloader:
                 print(f'epoch {epoch}, step {self.global_steps}')
-                # update ref_policy_wg
+
+                # ------------------------------------------------------------
+                # 步骤4.1：定期更新参考策略（Reference Policy）
+                # ------------------------------------------------------------
+                # 参考策略用于计算KL散度，防止策略更新偏离初始策略太远
+                # 通常每隔一定步数，将当前actor的参数同步到reference policy
                 if self.config.trainer.ref_update_steps is not None and self.global_steps % self.config.trainer.ref_update_steps == 0:
+                    # 保存当前actor-rollout worker的checkpoint到临时目录
                     self.actor_rollout_wg.save_checkpoint(
                         local_path=f'./log/temp/actor_rollout_wg_global_step_{self.global_steps}',
                         hdfs_path=None
                     )
+                    # 将保存的参数加载到参考策略worker中
                     self.ref_policy_wg.load_model_parameters(
                         source_model_path=f'./log/temp/actor_rollout_wg_global_step_{self.global_steps}',
                         strict=True
                     )
-                    print(f"load parameters from ./log/temp/actor_rollout_wg_global_step_{self.global_steps} to ref_policy_wg")
+                    print(
+                        f"load parameters from ./log/temp/actor_rollout_wg_global_step_{self.global_steps} to ref_policy_wg")
 
+                # 初始化当前step的指标和计时字典
                 metrics = {}
                 timing_raw = {}
 
+                # ------------------------------------------------------------
+                # 步骤4.2：准备训练批次数据
+                # ------------------------------------------------------------
+                # 将字典格式的batch转换为DataProto对象（统一的数据格式）
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
+                # 重复batch：每个prompt生成n_agent个响应（用于GRPO等算法的多样本估计）
+                # interleave=True表示交错排列，保持相同prompt的响应在一起
                 batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n_agent, interleave=True)
 
+                # ------------------------------------------------------------
+                # 步骤4.3：初始化环境
+                # ------------------------------------------------------------
+                # 提取环境的种子（通常使用数据的索引作为种子，保证可重复性）
                 env_seeds = [i['index'] for i in batch.non_tensor_batch['extra_info']]
                 print("env_seeds:", env_seeds)
+                # 为每个环境实例设置对应的种子并重置状态
+                # 每个(prompt, agent_id)对应一个独立的环境副本
                 for env, seed in zip(envs, env_seeds):
                     env.reset(seed=seed)
 
-
-                # pop those keys for generation
+                # ------------------------------------------------------------
+                # 步骤4.4：提取生成所需的批次数据
+                # ------------------------------------------------------------
+                # 从batch中弹出生成所需的键（input_ids, attention_mask, position_ids）
+                # 这些数据将用于LLM生成响应
                 gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
 
                 ####################
-                # original code here
+                # 原始代码（已废弃）：直接生成序列的方式
+                # 现在改用多轮交互的LLM循环生成方式（见下文）
+                ####################
 
                 # with _timer('gen', timing_raw):
                 #     gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
@@ -1001,27 +1252,47 @@ class RayPPOTrainer(object):
                 #     self._record_batch(batch, path=f'.log/{self.config.trainer.experiment_name}/gen_batch.txt')
 
                 ####################
-                # Below is aLL about agents - the "LLM + forloop"
+                # 新的多轮交互生成方式：LLM + 环境循环
                 ####################
 
                 with _timer('step', timing_raw):
                     """
-                    keep rolling to generate K turns of responses.
-                    when doing this, update the "original right side" when new responses are generated.
-                    finally, concatenate the "original left side" and "original right side" to get the final thing to feed to train the model.
+                    多轮交互生成流程：
+                    1. 持续生成K轮响应（K可以是固定值或动态值）
+                    2. 在生成过程中，每生成一轮新响应，就更新"右侧部分"（新生成的内容）
+                    3. 最终，将"左侧部分"（原始prompt）和"右侧部分"（所有生成的响应）拼接
+                    4. 得到完整的训练数据，送入模型进行训练
 
-                    Left-pad prompts, right-gen flow, Tensors dance like stardust glow.
-                    Errors swarm? Stay calm, don't fret- Code with coffee, debug sunset.
+                    技术细节：
+                    - Left-pad prompts（左填充提示）: 保持批次对齐
+                    - Right-gen flow（右生成流程）: 响应从右侧生成
+                    - Tensors dance like stardust glow: 张量在GPU间流动
+                    - Errors swarm? Stay calm, don't fret: 遇到错误不要慌
+                    - Code with coffee, debug sunset: 用咖啡编码，用日落调试
                     """
 
+                    # ------------------------------------------------------------
+                    # 步骤4.4.1：准备初始输入
+                    # ------------------------------------------------------------
+                    # 提取第一轮输入：取最后max_start_length个token作为初始输入
+                    # 这是多轮对话的起点
                     first_input_ids = gen_batch.batch['input_ids'][:, -gen_config.max_start_length:].clone()
-                    output_dir = (f"{self.config.logging.log_image_dir}/"
-                                 f"{self.config.trainer.experiment_name}/"
-                                 f"train/"
-                                 f"step_{self.global_steps}")
 
+                    # 设置输出目录：用于保存生成的对话日志和可视化
+                    output_dir = (f"{self.config.logging.log_image_dir}/"
+                                  f"{self.config.trainer.experiment_name}/"
+                                  f"train/"
+                                  f"step_{self.global_steps}")
+
+                    # ------------------------------------------------------------
+                    # 步骤4.4.2：运行LLM多轮交互循环
+                    # ------------------------------------------------------------
                     with _timer('gen', timing_raw):
+                        # 设置计时器：记录生成时间
                         generation_manager.timing_raw = timing_raw
+                        # 运行LLM循环：生成完整的多轮对话轨迹
+                        # 输入：gen_batch（提示数据）、envs（环境列表）、first_input_ids（初始输入）
+                        # 输出：final_gen_batch_output（完整的生成结果，包括responses、log_probs等）
                         final_gen_batch_output = generation_manager.run_llm_loop(
                             gen_batch=gen_batch,
                             envs=envs,
@@ -1033,174 +1304,297 @@ class RayPPOTrainer(object):
                     # with torch.no_grad():
                     #     output = self.actor_rollout_wg.compute_log_prob(final_gen_batch_output)
                     #     final_gen_batch_output = final_gen_batch_output.union(output)
-                    
-                    if self.config.algorithm.adv_estimator == 'grpo' or self.config.algorithm.reward_norm_type == 'grpo': # NOTE we currently use seed to group, better use prompt (hash) to group
+
+                    # ------------------------------------------------------------
+                    # 步骤4.5：设置唯一标识符（UID）用于分组
+                    # ------------------------------------------------------------
+                    # UID用于不同的优势估计算法中进行样本分组和奖励归一化
+                    # 不同算法的UID设置策略：
+                    # - GRPO：使用环境种子作为UID，相同prompt的多个响应共享UID（用于组内归一化）
+                    # - BRPO：使用空字符串，所有样本共享一个UID（批次级归一化）
+                    # - ARPO：使用随机UUID，每个样本独立UID（无相对归一化）
+                    if self.config.algorithm.adv_estimator == 'grpo' or self.config.algorithm.reward_norm_type == 'grpo':
+                        # GRPO：使用seed分组（注意：最好使用prompt的hash，但目前用seed）
                         batch.non_tensor_batch['uid'] = np.array([str(i) for i in env_seeds], dtype=object)
                     elif self.config.algorithm.adv_estimator == 'brpo' or self.config.algorithm.reward_norm_type == 'brpo':
+                        # BRPO：批次级归一化，所有样本共享相同UID
                         batch.non_tensor_batch['uid'] = np.array(["" for _ in range(len(batch.batch))], dtype=object)
                     elif self.config.algorithm.adv_estimator == 'arpo' or self.config.algorithm.reward_norm_type == 'arpo':
-                        batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object) # No Relative normalization
+                        # ARPO：无相对归一化，每个样本独立的UUID
+                        batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],
+                                                                 dtype=object)
 
-                    # reward
+                    # ------------------------------------------------------------
+                    # 步骤4.6：收集环境奖励
+                    # ------------------------------------------------------------
+                    # 从每个环境实例中收集最终奖励
+                    # 每个环境在多轮交互后计算出一个总奖励值
                     batch.non_tensor_batch['reward'] = np.array([0 for _ in range(len(envs))], dtype=object)
                     for idx, env in enumerate(envs):
                         batch.non_tensor_batch['reward'][idx] = env.reward
+                    # 保存原始奖励的副本（用于记录和对比）
                     batch.non_tensor_batch['ori_reward'] = copy.deepcopy(batch.non_tensor_batch['reward'])
 
-                    # 判断diagnosis_score是不是envs[0]的一个属性
+                    # ------------------------------------------------------------
+                    # 步骤4.7：收集特定任务的额外奖励分数（医疗对话场景）
+                    # ------------------------------------------------------------
+                    # 判断当前环境是否为医疗对话环境（包含诊断分数）
                     if hasattr(envs[0], 'diagnosis_score'):
-                        batch.non_tensor_batch['diagnosis_score'] = np.array([0 for _ in range(len(envs))], dtype=object)
-                        batch.non_tensor_batch['recommandation_score'] = np.array([0 for _ in range(len(envs))], dtype=object)
+                        # 初始化诊断分数和推荐分数数组
+                        batch.non_tensor_batch['diagnosis_score'] = np.array([0 for _ in range(len(envs))],
+                                                                             dtype=object)
+                        batch.non_tensor_batch['recommandation_score'] = np.array([0 for _ in range(len(envs))],
+                                                                                  dtype=object)
+                        # 从每个环境收集诊断和推荐的子分数
                         for idx, env in enumerate(envs):
                             batch.non_tensor_batch['diagnosis_score'][idx] = env.diagnosis_score
                             batch.non_tensor_batch['recommandation_score'][idx] = env.recommandation_score
 
-                    # normalize reward
+                    # ------------------------------------------------------------
+                    # 步骤4.8：奖励归一化
+                    # ------------------------------------------------------------
+                    # 对奖励进行归一化处理，减少方差，提高训练稳定性
+                    # 归一化方式取决于reward_norm_type（grpo/brpo/arpo）
                     if self.config.algorithm.reward_norm_type is not None:
-                        batch.non_tensor_batch['reward'] = normalize_reward(batch.non_tensor_batch['reward'], batch.non_tensor_batch['uid'], self.config.algorithm.reward_norm_type)
+                        batch.non_tensor_batch['reward'] = normalize_reward(batch.non_tensor_batch['reward'],
+                                                                            batch.non_tensor_batch['uid'],
+                                                                            self.config.algorithm.reward_norm_type)
 
-                    # metric for two-armed bandit
-                    # NOTE here we assume invalid action is 0, low arm is 1, high arm is 2
+                    # ------------------------------------------------------------
+                    # 步骤4.9：收集特定任务的指标（双臂老虎机场景）
+                    # ------------------------------------------------------------
+                    # 如果是双臂老虎机任务，记录每个环境选择的动作
+                    # 注意：假设无效动作=0，低臂=1，高臂=2
                     if batch.non_tensor_batch['data_source'][0] == 'two_armed_bandit':
                         batch.non_tensor_batch['bandit_metrics'] = np.array([0 for _ in range(len(envs))], dtype=object)
                         for idx, env in enumerate(envs):
                             batch.non_tensor_batch['bandit_metrics'][idx] = env.get_last_action()
 
-                    # metrics for actions
+                    # ------------------------------------------------------------
+                    # 步骤4.10：收集环境统计指标
+                    # ------------------------------------------------------------
+                    # 初始化环境的各项统计指标数组
                     batch.non_tensor_batch['total_env'] = np.array([1 for _ in range(len(envs))], dtype=object)
                     batch.non_tensor_batch['finished_env'] = np.array([0 for _ in range(len(envs))], dtype=object)
                     batch.non_tensor_batch['success_env'] = np.array([0 for _ in range(len(envs))], dtype=object)
                     batch.non_tensor_batch['traj_length'] = np.array([0 for _ in range(len(envs))], dtype=object)
                     batch.non_tensor_batch['valid_action'] = np.array([0 for _ in range(len(envs))], dtype=object)
                     batch.non_tensor_batch['effective_action'] = np.array([0 for _ in range(len(envs))], dtype=object)
-                    batch.non_tensor_batch['effective_action_ratio'] = np.array([0 for _ in range(len(envs))], dtype=object)
+                    batch.non_tensor_batch['effective_action_ratio'] = np.array([0 for _ in range(len(envs))],
+                                                                                dtype=object)
+                    # 从每个环境收集指标
                     for idx, env in enumerate(envs):
+                        # finished_env: 环境是否结束（达到终止条件）
                         batch.non_tensor_batch['finished_env'][idx] = int(env.finished())
+                        # success_env: 环境是否成功完成任务
                         batch.non_tensor_batch['success_env'][idx] = int(env.success())
+                        # 获取环境的追踪变量（记录每一步的动作和状态）
                         tracking_vars = env.get_tracking_variables()
+                        # traj_length: 轨迹长度（执行的总步数）
                         batch.non_tensor_batch['traj_length'][idx] = len(tracking_vars['actions'])
-                        batch.non_tensor_batch['valid_action'][idx] = sum(1 for x in tracking_vars['actions_valid'] if x is not None)
-                        batch.non_tensor_batch['effective_action'][idx] = sum(1 for x in tracking_vars['actions_effective'] if x is not None)
-                        batch.non_tensor_batch['effective_action_ratio'][idx] = sum(1 for x in tracking_vars['actions_effective'] if x is not None) / len(tracking_vars['actions'])
+                        # valid_action: 有效动作数量（格式正确且可解析的动作）
+                        batch.non_tensor_batch['valid_action'][idx] = sum(
+                            1 for x in tracking_vars['actions_valid'] if x is not None)
+                        # effective_action: 有效动作数量（对环境状态有实际影响的动作）
+                        batch.non_tensor_batch['effective_action'][idx] = sum(
+                            1 for x in tracking_vars['actions_effective'] if x is not None)
+                        # effective_action_ratio: 有效动作比率
+                        batch.non_tensor_batch['effective_action_ratio'][idx] = sum(
+                            1 for x in tracking_vars['actions_effective'] if x is not None) / len(
+                            tracking_vars['actions'])
+
+                    # ------------------------------------------------------------
+                    # 步骤4.11：合并生成结果到batch
+                    # ------------------------------------------------------------
+                    # 重复batch以匹配PPO的n次采样（用于多次采样的PPO变体）
                     batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+                    # 将生成的结果合并到batch中（包括responses、old_log_probs等）
                     batch = batch.union(final_gen_batch_output)
 
-                    ####################
-                    ####################
-
+                    # ------------------------------------------------------------
+                    # 步骤4.12：创建响应掩码
+                    # ------------------------------------------------------------
+                    # 响应掩码用于标识哪些token需要参与loss计算
                     if self.config.actor_rollout_ref.actor.state_masking:
-                        batch,metrics = self._create_loss_mask(batch, metrics)
+                        # 如果启用状态掩码，使用自定义的loss mask创建方法
+                        # 这会屏蔽掉特定标记（如<think>标签）内的token
+                        batch, metrics = self._create_loss_mask(batch, metrics)
                     else:
+                        # 否则，使用标准的响应掩码（仅包含生成的response部分）
                         batch.batch["response_mask"] = compute_response_mask(batch)
-                    # balance the number of valid tokens on each dp rank.
-                    # Note that this breaks the order of data inside the batch.
-                    # Please take care when you implement group based adv computation such as GRPO and rloo
+
+                    # ------------------------------------------------------------
+                    # 步骤4.13：批次平衡
+                    # ------------------------------------------------------------
+                    # 平衡每个数据并行（DP）rank上的有效token数量
+                    # 注意：这会打乱batch内数据的顺序
+                    # 使用基于组的优势计算（如GRPO、RLOO）时需要特别小心
                     if self.config.trainer.balance_batch:
                         self._balance_batch(batch, metrics=metrics)
 
-                    # compute global_valid tokens
+                    # ------------------------------------------------------------
+                    # 步骤4.14：记录全局token数量
+                    # ------------------------------------------------------------
+                    # 计算每个序列的总token数（用于后续的统计和调试）
                     batch.meta_info['global_token_num'] = torch.sum(batch.batch['attention_mask'], dim=-1).tolist()
 
-                    # recompute old_log_probs
+                    # ------------------------------------------------------------
+                    # 步骤4.15：重新计算旧策略的log概率（old_log_probs）
+                    # ------------------------------------------------------------
+                    # 在环境交互后，需要重新计算当前策略下的log_probs
+                    # 这些log_probs将作为"旧策略"用于PPO的clip目标计算
                     with _timer("old_log_prob", timing_raw):
+                        # 调用actor_rollout worker计算log_probs和熵
                         old_log_prob = self.actor_rollout_wg.compute_log_prob(batch)
+                        # 提取熵值（用于熵正则化，鼓励策略探索）
                         entropys = old_log_prob.batch["entropys"]
                         response_masks = batch.batch["response_mask"]
                         loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
+                        # 聚合熵损失（根据loss_agg_mode：token-mean、seq-mean等）
                         entropy_loss = agg_loss(
                             loss_mat=entropys, loss_mask=response_masks, loss_agg_mode=loss_agg_mode
                         )
+                        # 记录熵损失指标
                         old_log_prob_metrics = {"actor/entropy_loss": entropy_loss.detach().item()}
                         metrics.update(old_log_prob_metrics)
+                        # 移除熵值，只保留log_probs
                         old_log_prob.batch.pop("entropys")
+                        # 将old_log_probs合并到batch中
                         batch = batch.union(old_log_prob)
 
+                    # ------------------------------------------------------------
+                    # 步骤4.16：计算参考策略的log概率（ref_log_prob）
+                    # ------------------------------------------------------------
+                    # 参考策略是一个固定的模型，用于计算KL散度惩罚
+                    # 防止策略更新偏离初始策略太远（保持训练稳定性）
                     if self.use_reference_policy:
-                        # compute reference log_prob
                         with _timer('ref', timing_raw):
+                            # 调用参考策略worker计算ref_log_prob
                             ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
+                            # 将ref_log_prob合并到batch中
                             batch = batch.union(ref_log_prob)
 
-                    # compute values
+                    # ------------------------------------------------------------
+                    # 步骤4.17：计算价值函数（values）
+                    # ------------------------------------------------------------
+                    # 价值函数V(s)用于GAE（Generalized Advantage Estimation）
+                    # 仅在使用GAE优势估计器时需要critic网络
                     if self.use_critic:
                         with _timer('values', timing_raw):
+                            # 调用critic worker计算values
                             values = self.critic_wg.compute_values(batch)
+                            # 将values合并到batch中
                             batch = batch.union(values)
 
+                    # ------------------------------------------------------------
+                    # 步骤4.18：计算token级别的奖励和优势函数
+                    # ------------------------------------------------------------
                     with _timer('adv', timing_raw):
-                        # compute scores. Support both model and function-based.
-                        # We first compute the scores using reward model. Then, we call reward_fn to combine
-                        # the results from reward model and rule-based results.
+                        # 步骤4.18.1：计算token级别的分数（支持模型和函数两种方式）
+                        # 首先使用奖励模型计算分数，然后调用reward_fn结合基于规则的结果
                         if self.use_rm:
-                            # we first compute reward model score
+                            # 如果使用奖励模型，先计算模型分数
                             reward_tensor = self.rm_wg.compute_rm_score(batch)
                             batch = batch.union(reward_tensor)
 
-                        # we combine with rule-based rm
+                        # 步骤4.18.2：调用奖励函数合并基于规则的奖励
+                        # reward_fn将环境奖励分配到每个token上
                         reward_tensor = self.reward_fn(batch)
                         batch.batch['token_level_scores'] = reward_tensor
 
-                        # compute rewards. apply_kl_penalty if available
+                        # 步骤4.18.3：应用KL惩罚（如果启用）
+                        # KL惩罚 = token_level_scores - beta * KL(π||π_ref)
+                        # 防止策略偏离参考策略太远
                         if self.config.algorithm.use_kl_in_reward:
                             batch, kl_metrics = apply_kl_penalty(
                                 batch, kl_ctrl=self.kl_ctrl_in_reward, kl_penalty=self.config.algorithm.kl_penalty
                             )
                             metrics.update(kl_metrics)
                         else:
+                            # 如果不使用KL惩罚，token_level_rewards = token_level_scores
                             batch.batch["token_level_rewards"] = batch.batch["token_level_scores"]
 
-                        # compute advantages, executed on the driver process
+                        # 步骤4.18.4：计算优势函数（advantages）
+                        # 在驱动进程上执行（轻量级计算）
+                        # 根据adv_estimator类型选择算法：GAE、GRPO、RLOO等
                         batch = compute_advantage(batch,
                                                   adv_estimator=self.config.algorithm.adv_estimator,
                                                   gamma=self.config.algorithm.gamma,
                                                   lam=self.config.algorithm.lam,
                                                   num_repeat=self.config.actor_rollout_ref.rollout.n)
 
-                    # update critic
+                    # ------------------------------------------------------------
+                    # 步骤4.19：更新Critic网络（如果使用GAE）
+                    # ------------------------------------------------------------
+                    # Critic学习价值函数V(s)，用于减少优势估计的方差
                     if self.use_critic:
                         with _timer('update_critic', timing_raw):
+                            # 调用critic worker进行梯度更新
                             critic_output = self.critic_wg.update_critic(batch)
+                        # 聚合并记录critic的训练指标
                         critic_output_metrics = reduce_metrics(critic_output.meta_info['metrics'])
                         metrics.update(critic_output_metrics)
 
-                    # implement critic warmup
+                    # ------------------------------------------------------------
+                    # 步骤4.20：更新Actor策略网络
+                    # ------------------------------------------------------------
+                    # Critic预热机制：只有在训练一定步数后才开始更新actor
+                    # 这确保critic先学习到一个合理的价值函数
                     if self.config.trainer.critic_warmup <= self.global_steps:
-                        # update actor
                         with _timer('update_actor', timing_raw):
-                            # if self.config.actor_rollout_ref.actor.state_masking:
-                            #     batch,metrics = self._create_loss_mask(batch, metrics)
+                            # 调用actor_rollout worker进行PPO策略梯度更新
+                            # 使用clip目标：L^CLIP = min(r_t(θ)·A, clip(r_t(θ), 1-ε, 1+ε)·A)
                             actor_output = self.actor_rollout_wg.update_actor(batch)
+                        # 聚合并记录actor的训练指标
                         actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
                         metrics.update(actor_output_metrics)
 
-                    # validate
+                    # ------------------------------------------------------------
+                    # 步骤4.21：定期验证
+                    # ------------------------------------------------------------
+                    # 按照test_freq频率在验证集上评估模型性能
                     if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and \
-                        self.global_steps % self.config.trainer.test_freq == 0:
+                            self.global_steps % self.config.trainer.test_freq == 0:
                         with _timer('testing', timing_raw):
                             val_metrics: dict = self._validate()
                         metrics.update(val_metrics)
 
+                    # ------------------------------------------------------------
+                    # 步骤4.22：定期保存checkpoint
+                    # ------------------------------------------------------------
+                    # 按照save_freq频率保存模型权重和训练状态
                     if self.config.trainer.save_freq > 0 and \
                             self.global_steps % self.config.trainer.save_freq == 0:
                         with _timer('save_checkpoint', timing_raw):
                             self._save_checkpoint()
 
-                # collect metrics
+                # ------------------------------------------------------------
+                # 步骤4.23：收集和记录训练指标
+                # ------------------------------------------------------------
+                # 计算数据相关指标（奖励、优势、响应长度等）
                 metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
+                # 计算计时指标（每个阶段的时间消耗）
                 metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
 
-                # TODO: make a canonical logger that supports various backend
+                # 记录所有指标到日志系统（WandB/TensorBoard）
                 logger.log(data=metrics, step=self.global_steps)
 
+                # ------------------------------------------------------------
+                # 步骤4.24：更新全局步数
+                # ------------------------------------------------------------
                 self.global_steps += 1
 
+                # ------------------------------------------------------------
+                # 步骤4.25：检查训练是否完成
+                # ------------------------------------------------------------
                 if self.global_steps >= self.total_training_steps:
-
-                    # perform validation after training
+                    # 训练结束后进行最终验证
                     if self.val_reward_fn is not None:
                         val_metrics = self._validate()
                         metrics.update(val_metrics)
+                    # 结束训练，退出主循环
                     return
+
     def _create_loss_mask(self, batch, metrics):
         """Create loss mask for state tokens."""
         response_length = batch.batch['responses'].shape[-1]
@@ -1208,22 +1602,21 @@ class RayPPOTrainer(object):
             response_mask = batch.batch['response_mask']
         else:
             response_mask = batch.batch['attention_mask'][:, -response_length:]
-        
+
         # Initialize state mask
         state_mask = torch.ones_like(response_mask)
-        
+
         responses = [self.tokenizer.decode(resp, skip_special_tokens=False) for resp in batch.batch['responses']]
-    
+
         for i, response in enumerate(responses):
             # Find all pairs of start and end marker positions
             start_marker = self.config.algorithm.state_masking.start_state_marker
-            end_marker = self.config.algorithm.state_masking.end_state_marker   
-            
+            end_marker = self.config.algorithm.state_masking.end_state_marker
+
             # Get all start and end positions
             start_positions = [m.start() for m in re.finditer(re.escape(start_marker), response)]
             end_positions = [m.start() + len(end_marker) for m in re.finditer(re.escape(end_marker), response)]
-            
-            
+
             prev_end = 0
             prev_end_token_pos = 0
             # Convert character positions to token positions
@@ -1231,35 +1624,35 @@ class RayPPOTrainer(object):
                 prefix_to_start = response[prev_end:start]
                 state_section = response[start:end]
                 prev_end = end
-                
+
                 start_tokens = self.tokenizer.encode(prefix_to_start, add_special_tokens=False)
                 state_tokens = self.tokenizer.encode(state_section, add_special_tokens=False)
 
                 start_token_pos = len(start_tokens) + prev_end_token_pos
                 end_token_pos = start_token_pos + len(state_tokens)
                 prev_end_token_pos = end_token_pos
-                
+
                 state_mask[i, start_token_pos:end_token_pos] = 0
-        
-        loss_mask = state_mask * response_mask # 1 for valid tokens, 0 for masked tokens
+
+        loss_mask = state_mask * response_mask  # 1 for valid tokens, 0 for masked tokens
         batch.batch['loss_mask'] = loss_mask
         batch.batch['response_mask'] = loss_mask
-        batch.batch['critic_response_mask'] = state_mask * batch.batch['attention_mask'][:, -response_length-1:-1]
-        
+        batch.batch['critic_response_mask'] = state_mask * batch.batch['attention_mask'][:, -response_length - 1:-1]
+
         # Debug print
         print("\nRaw batch[0] (before masking):\n", self.tokenizer.decode(batch.batch['responses'][0]))
         response_ids = batch.batch['responses'][0]
         unmasked_ids = response_ids[loss_mask[0] == 1]
         print("\nUnmasked batch[0] (after masking):\n", self.tokenizer.decode(unmasked_ids))
-        
+
         masked_ids = response_ids[loss_mask[0] == 0]
         print("\nMasked batch[0] (masked parts):\n", self.tokenizer.decode(masked_ids))
-        
+
         metrics.update({
             'state_tokens/total': loss_mask.sum().item(),
             'state_tokens/coverage': (loss_mask.sum() / response_mask.sum()).item(),
         })
-        
+
         return batch, metrics
 
     def _validate(self):
@@ -1295,11 +1688,11 @@ class RayPPOTrainer(object):
             actor_rollout_wg=self.actor_rollout_wg,
             env_class=self.env_class,
             config=gen_config,
-            logger = self.logger,
-            is_validation = True,
+            logger=self.logger,
+            is_validation=True,
         )
 
-        envs = [self.val_env.copy() for _ in range(self.config.data.val_batch_size)] # do not repeat
+        envs = [self.val_env.copy() for _ in range(self.config.data.val_batch_size)]  # do not repeat
         # envs = [self.val_env.copy() for _ in range(self.config.data.val_batch_size * self.config.actor_rollout_ref.rollout.n_agent)]
         val_global_steps = 1
 
@@ -1312,7 +1705,7 @@ class RayPPOTrainer(object):
             print("env_seeds:", env_seeds)
             for env, seed in zip(envs, env_seeds):
                 env.reset(seed=seed)
-            
+
             test_gen_batch = test_batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
             test_gen_batch.meta_info = {
                 'eos_token_id': self.tokenizer.eos_token_id,
@@ -1324,9 +1717,9 @@ class RayPPOTrainer(object):
             with _timer('step', timing_raw):
                 first_input_ids = test_gen_batch.batch['input_ids'][:, -gen_config.max_start_length:].clone()
                 output_dir = (f"{self.config.logging.log_image_dir}/"
-                                f"{self.config.trainer.experiment_name}/"
-                                f"validation_{self.val_num}/"
-                                f"step_{val_global_steps}")
+                              f"{self.config.trainer.experiment_name}/"
+                              f"validation_{self.val_num}/"
+                              f"step_{val_global_steps}")
                 with _timer('gen', timing_raw):
                     generation_manager.timing_raw = timing_raw
                     final_gen_batch_output = generation_manager.run_llm_loop(
@@ -1347,26 +1740,31 @@ class RayPPOTrainer(object):
                 if test_batch.non_tensor_batch['data_source'][0] == 'two_armed_bandit':
                     # metric for two-armed bandit
                     # NOTE here we assume invalid action is 0, low arm is 1, high arm is 2
-                    test_batch.non_tensor_batch['bandit_metrics'] = np.array([0 for _ in range(len(envs))], dtype=object)
+                    test_batch.non_tensor_batch['bandit_metrics'] = np.array([0 for _ in range(len(envs))],
+                                                                             dtype=object)
                     for idx, env in enumerate(envs):
                         test_batch.non_tensor_batch['bandit_metrics'][idx] = env.get_last_action()
                     metrics['bandit_metrics'].append(test_batch.non_tensor_batch['bandit_metrics'])
-                
+
                 test_batch.non_tensor_batch['total_env'] = np.array([1 for _ in range(len(envs))], dtype=object)
                 test_batch.non_tensor_batch['finished_env'] = np.array([0 for _ in range(len(envs))], dtype=object)
                 test_batch.non_tensor_batch['success_env'] = np.array([0 for _ in range(len(envs))], dtype=object)
                 test_batch.non_tensor_batch['traj_length'] = np.array([0 for _ in range(len(envs))], dtype=object)
                 test_batch.non_tensor_batch['valid_action'] = np.array([0 for _ in range(len(envs))], dtype=object)
                 test_batch.non_tensor_batch['effective_action'] = np.array([0 for _ in range(len(envs))], dtype=object)
-                test_batch.non_tensor_batch['effective_action_ratio'] = np.array([0 for _ in range(len(envs))], dtype=object)
+                test_batch.non_tensor_batch['effective_action_ratio'] = np.array([0 for _ in range(len(envs))],
+                                                                                 dtype=object)
                 for idx, env in enumerate(envs):
                     test_batch.non_tensor_batch['finished_env'][idx] = int(env.finished())
                     test_batch.non_tensor_batch['success_env'][idx] = int(env.success())
                     tracking_vars = env.get_tracking_variables()
                     test_batch.non_tensor_batch['traj_length'][idx] = len(tracking_vars['actions'])
-                    test_batch.non_tensor_batch['valid_action'][idx] = sum(1 for x in tracking_vars['actions_valid'] if x is not None)
-                    test_batch.non_tensor_batch['effective_action'][idx] = sum(1 for x in tracking_vars['actions_effective'] if x is not None)
-                    test_batch.non_tensor_batch['effective_action_ratio'][idx] = sum(1 for x in tracking_vars['actions_effective'] if x is not None) / len(tracking_vars['actions'])
+                    test_batch.non_tensor_batch['valid_action'][idx] = sum(
+                        1 for x in tracking_vars['actions_valid'] if x is not None)
+                    test_batch.non_tensor_batch['effective_action'][idx] = sum(
+                        1 for x in tracking_vars['actions_effective'] if x is not None)
+                    test_batch.non_tensor_batch['effective_action_ratio'][idx] = sum(
+                        1 for x in tracking_vars['actions_effective'] if x is not None) / len(tracking_vars['actions'])
 
                 # action metrics
                 metrics['total_env'].append(test_batch.non_tensor_batch['total_env'])
@@ -1380,7 +1778,6 @@ class RayPPOTrainer(object):
                 # Accumulate batch metrics into global storage
                 global_token_scores.append(test_batch.non_tensor_batch['reward'])
 
-
         global_scores = np.concatenate(global_token_scores, axis=0)
         global_metrics = {
             'global_score/mean': float(global_scores.mean()),
@@ -1393,9 +1790,10 @@ class RayPPOTrainer(object):
             'validate_metric/traj_length': float(np.array(metrics['traj_length'], dtype=np.int16).mean()),
             'validate_metric/valid_action': float(np.array(metrics['valid_action'], dtype=np.int16).mean()),
             'validate_metric/effective_action': float(np.array(metrics['effective_action'], dtype=np.int16).mean()),
-            'validate_metric/effective_action_ratio': float(np.array(metrics['effective_action_ratio'], dtype=np.float32).mean()),
+            'validate_metric/effective_action_ratio': float(
+                np.array(metrics['effective_action_ratio'], dtype=np.float32).mean()),
         }
-        if 'bandit_metrics' in metrics: # NOTE hard code for two-armed bandit
+        if 'bandit_metrics' in metrics:  # NOTE hard code for two-armed bandit
             batch_action = np.array(metrics['bandit_metrics'], dtype=np.int16)
             global_metrics['validate_metric/n_low_arm'] = int(np.sum(batch_action == 1))
             global_metrics['validate_metric/n_high_arm'] = int(np.sum(batch_action == 2))
@@ -1403,5 +1801,3 @@ class RayPPOTrainer(object):
         print("global_metrics", global_metrics)
         self.logger.log(data=global_metrics, step=self.val_num)
         return global_metrics
-    
-    
